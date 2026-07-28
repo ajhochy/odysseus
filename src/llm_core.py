@@ -1431,6 +1431,28 @@ def _build_anthropic_payload(model, messages, temperature, max_tokens, stream=Fa
 
 def _build_anthropic_headers(headers):
     """Convert Bearer auth to x-api-key for Anthropic."""
+    auth_mode = "api-key"
+    try:
+        from src.anthropic_subscription import (
+            anthropic_subscription_headers,
+            is_anthropic_subscription_headers,
+        )
+
+        if is_anthropic_subscription_headers(headers):
+            auth_mode = "anthropic-subscription"
+            bearer = next(
+                (
+                    value[7:]
+                    for key, value in headers.items()
+                    if str(key).lower() == "authorization"
+                    and isinstance(value, str)
+                    and value.startswith("Bearer ")
+                ),
+                "",
+            )
+            return anthropic_subscription_headers(bearer)
+    except Exception:
+        pass
     h = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
     if headers:
         for k, v in headers.items():
@@ -1439,6 +1461,18 @@ def _build_anthropic_headers(headers):
             else:
                 h[k] = v
     return h
+
+
+def _anthropic_auth_mode(headers) -> str:
+    try:
+        from src.anthropic_subscription import is_anthropic_subscription_headers
+
+        if is_anthropic_subscription_headers(headers):
+            return "anthropic-subscription"
+    except Exception:
+        pass
+    return "api-key"
+
 
 def _parse_anthropic_response(data: dict) -> str:
     """Extract text from an Anthropic response.
@@ -1816,6 +1850,7 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
         messages_copy = non_sys
 
     provider = _detect_provider(url)
+    auth_mode = "api-key"
     cache_key = _get_cache_key(url, model, messages_copy, temperature, max_tokens)
     cached_response = _get_cached_response(cache_key)
     if cached_response:
@@ -1823,9 +1858,18 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
         return cached_response
 
     if provider == "anthropic":
+        auth_mode = _anthropic_auth_mode(headers)
         target_url = _normalize_anthropic_url(url)
         h = _build_anthropic_headers(headers)
         payload = _build_anthropic_payload(model, messages_copy, temperature, max_tokens)
+        if auth_mode == "anthropic-subscription":
+            from src.anthropic_subscription import (
+                transform_oauth_messages,
+                transform_oauth_tools,
+            )
+
+            payload = transform_oauth_messages(payload)
+            payload = transform_oauth_tools(payload)
     elif provider == "ollama":
         target_url = _normalize_ollama_url(url)
         payload = _build_ollama_payload(
@@ -1856,6 +1900,12 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
     except Exception as e:
         raise HTTPException(502, f"POST {target_url} failed: {e}")
     if not r.is_success:
+        if auth_mode == "anthropic-subscription":
+            from src.anthropic_subscription import format_inference_error
+
+            raise HTTPException(
+                r.status_code, format_inference_error(r.status_code)
+            )
         raise HTTPException(502, f"Upstream {target_url} -> {r.status_code}: {r.text}")
     data = r.json()
     try:
@@ -1961,6 +2011,7 @@ async def llm_call_async(
 ) -> str:
     """Asynchronous LLM call using httpx with connection pooling, timeout, retry logic, and performance logging."""
     provider = _detect_provider(url)
+    auth_mode = "api-key"
     messages_copy = _sanitize_llm_messages(messages)
 
     # Consolidate multiple system messages into one at the start.
@@ -2027,9 +2078,18 @@ async def llm_call_async(
         return response
 
     if provider == "anthropic":
+        auth_mode = _anthropic_auth_mode(headers)
         target_url = _normalize_anthropic_url(url)
         h = _build_anthropic_headers(headers)
         payload = _build_anthropic_payload(model, messages_copy, temperature, max_tokens)
+        if auth_mode == "anthropic-subscription":
+            from src.anthropic_subscription import (
+                transform_oauth_messages,
+                transform_oauth_tools,
+            )
+
+            payload = transform_oauth_messages(payload)
+            payload = transform_oauth_tools(payload)
     elif provider == "ollama":
         target_url = _normalize_ollama_url(url)
         h = {"Content-Type": "application/json"}
@@ -2078,7 +2138,14 @@ async def llm_call_async(
                 r = await httpx_post_kimi_aware_async(client, target_url, h, json=payload, timeout=call_timeout)
             duration = time.time() - start
             if not r.is_success:
-                friendly = _format_upstream_error(r.status_code, r.text, target_url)
+                if auth_mode == "anthropic-subscription":
+                    from src.anthropic_subscription import format_inference_error
+
+                    friendly = format_inference_error(r.status_code)
+                else:
+                    friendly = _format_upstream_error(
+                        r.status_code, r.text, target_url
+                    )
                 logger.warning(
                     f"LLM async call to {target_url} failed in {duration:.2f}s "
                     f"(attempt {attempt}): HTTP {r.status_code} {friendly}"
@@ -2165,6 +2232,7 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
       - data: [DONE]                       — end of stream
     """
     provider = _detect_provider(url)
+    auth_mode = "api-key"
     messages_copy = _sanitize_llm_messages(messages)
 
     # Consolidate multiple system messages into one at the start.
@@ -2182,9 +2250,18 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
         messages_copy = non_sys
 
     if provider == "anthropic":
+        auth_mode = _anthropic_auth_mode(headers)
         target_url = _normalize_anthropic_url(url)
         h = _build_anthropic_headers(headers)
         payload = _build_anthropic_payload(model, messages_copy, temperature, max_tokens, stream=True, tools=tools)
+        if auth_mode == "anthropic-subscription":
+            from src.anthropic_subscription import (
+                transform_oauth_messages,
+                transform_oauth_tools,
+            )
+
+            payload = transform_oauth_messages(payload)
+            payload = transform_oauth_tools(payload)
     elif provider == "ollama":
         target_url = _normalize_ollama_url(url)
         h = {"Content-Type": "application/json"}
@@ -2391,8 +2468,24 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                 _clear_host_dead(target_url)
                 if r.status_code != 200:
                     raw = (await r.aread()).decode(errors="replace")
-                    friendly = _format_upstream_error(r.status_code, raw, target_url)
-                    yield f'event: error\ndata: {json.dumps({"status": r.status_code, "text": friendly, "raw": raw[:500]})}\n\n'
+                    if auth_mode == "anthropic-subscription":
+                        from src.anthropic_subscription import format_inference_error
+
+                        friendly = format_inference_error(r.status_code)
+                        error_data = {
+                            "status": r.status_code,
+                            "text": friendly,
+                        }
+                    else:
+                        friendly = _format_upstream_error(
+                            r.status_code, raw, target_url
+                        )
+                        error_data = {
+                            "status": r.status_code,
+                            "text": friendly,
+                            "raw": raw[:500],
+                        }
+                    yield f'event: error\ndata: {json.dumps(error_data)}\n\n'
                     return
                 async for line in r.aiter_lines():
                     # SSE allows "data:value" with no space after the colon
@@ -2412,9 +2505,16 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                             cb = j.get("content_block") or {}
                             _anth_block_type = cb.get("type", "text")
                             if _anth_block_type == "tool_use":
+                                tool_name = cb.get("name") or ""
+                                if auth_mode == "anthropic-subscription":
+                                    from src.anthropic_subscription import (
+                                        strip_oauth_tool_name,
+                                    )
+
+                                    tool_name = strip_oauth_tool_name(tool_name)
                                 _anth_tool_blocks[_anth_block_idx] = {
                                     "id": cb.get("id") or f"call_{_anth_block_idx}",
-                                    "name": cb.get("name") or "",
+                                    "name": tool_name,
                                     "arguments": "",
                                 }
                         elif evt == "content_block_delta":
@@ -2464,7 +2564,15 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                             yield "data: [DONE]\n\n"
                             return
                         elif evt == "error":
-                            err_msg = j.get("error", {}).get("message", "Unknown error")
+                            if auth_mode == "anthropic-subscription":
+                                err_msg = (
+                                    "Anthropic subscription request failed. "
+                                    "Retry or reconnect if authorization was rejected."
+                                )
+                            else:
+                                err_msg = j.get("error", {}).get(
+                                    "message", "Unknown error"
+                                )
                             yield f'event: error\ndata: {json.dumps({"error": err_msg, "status": 400})}\n\n'
                             return
                     except json.JSONDecodeError:

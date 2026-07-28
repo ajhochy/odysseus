@@ -27,6 +27,17 @@ _NON_CHAT_MODEL = (
 )
 
 
+class RuntimeCredential(str):
+    """Request-local credential value carrying a non-serialized auth mode."""
+
+    auth_mode: Optional[str]
+
+    def __new__(cls, value: str, auth_mode: Optional[str] = None):
+        instance = str.__new__(cls, value)
+        instance.auth_mode = auth_mode
+        return instance
+
+
 def _first_chat_model(models) -> Optional[str]:
     """First model that isn't an embedding/tts/etc.; falls back to models[0]."""
     for m in (models or []):
@@ -116,11 +127,35 @@ def resolve_endpoint_runtime(ep, owner: Optional[str] = None) -> Tuple[str, Opti
     api_key = getattr(ep, "api_key", None)
     auth_id = getattr(ep, "provider_auth_id", None)
     if auth_id:
-        from src.chatgpt_subscription import resolve_runtime_credentials
+        from core.database import ProviderAuthSession
 
-        creds = resolve_runtime_credentials(auth_id, owner=owner)
+        db = SessionLocal()
+        try:
+            auth_row = (
+                db.query(ProviderAuthSession)
+                .filter(ProviderAuthSession.id == auth_id)
+                .first()
+            )
+            provider = getattr(auth_row, "provider", "") if auth_row else ""
+        finally:
+            db.close()
+        if provider == "anthropic-subscription":
+            from src import anthropic_subscription
+
+            creds = anthropic_subscription.resolve_runtime_credentials(
+                auth_id, owner=owner
+            )
+        else:
+            from src.chatgpt_subscription import resolve_runtime_credentials
+
+            creds = resolve_runtime_credentials(auth_id, owner=owner)
         base = normalize_base(creds.get("base_url") or base)
-        api_key = creds.get("api_key")
+        token = creds.get("api_key")
+        api_key = (
+            RuntimeCredential(token, creds.get("auth_mode"))
+            if token
+            else None
+        )
     return base, api_key
 
 
@@ -282,6 +317,11 @@ def build_headers(api_key: Optional[str], base: str) -> Dict[str, str]:
     provider = _detect_provider(base)
     headers: Dict[str, str] = {}
     if provider == "anthropic":
+        auth_mode = getattr(api_key, "auth_mode", None)
+        if auth_mode == "anthropic-subscription":
+            from src.anthropic_subscription import anthropic_subscription_headers
+
+            return anthropic_subscription_headers(api_key)
         if api_key:
             headers["x-api-key"] = api_key
         headers["anthropic-version"] = "2023-06-01"

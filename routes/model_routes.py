@@ -695,6 +695,8 @@ def _resolve_probe_key(ep) -> Optional[str]:
 def _probe_single_model(base: str, api_key: str, model_id: str, timeout: int = 10, with_tools: bool = False) -> dict:
     """Send a realistic completion request to a single model. Returns {status, latency_ms, error?}."""
     provider = _safe_detect_provider(base)
+    if getattr(api_key, "auth_mode", None) == "anthropic-subscription":
+        return {"status": "ok", "latency_ms": 0, "skipped": True}
     if _is_discovery_only_provider(provider):
         return {"status": "ok", "latency_ms": 0, "skipped": True}
     messages = [
@@ -955,6 +957,12 @@ def _probe_endpoint(base_url: str, api_key: str = None, timeout: int = 5) -> Lis
     from src.llm_core import httpx_get_kimi_aware
     base = resolve_url(_normalize_base(base_url))
     provider = _safe_detect_provider(base)
+    if getattr(api_key, "auth_mode", None) == "anthropic-subscription":
+        from src.anthropic_subscription import (
+            CURATED_ANTHROPIC_SUBSCRIPTION_MODELS,
+        )
+
+        return list(CURATED_ANTHROPIC_SUBSCRIPTION_MODELS)
     if provider == "chatgpt-subscription":
         from src.chatgpt_subscription import fetch_available_models
         if api_key:

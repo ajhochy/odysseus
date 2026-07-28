@@ -22,6 +22,11 @@ import settingsModule from './settings.js';
 import cookbookModule from './cookbook.js';
 import { EVAL_PROMPTS } from './compare/index.js';
 import { PROVIDER_DEVICE_FLOWS, formatDeviceFlowError, runProviderDeviceFlow } from './providerDeviceFlow.js';
+import {
+  completeAnthropicSubscriptionOAuth,
+  formatAnthropicSubscriptionError,
+  startAnthropicSubscriptionOAuth,
+} from './anthropicSubscriptionFlow.js';
 
 // ── Module state ──────────────────────────────────────────────────────
 
@@ -29,6 +34,7 @@ let API_BASE = '';
 let setupMode = false;
 let pendingSetupApiKey = '';
 let pendingSetupProvider = null;
+let pendingAnthropicSubscriptionAttempt = null;
 let setupIntroShown = false;
 
 // External references set via initSlashCommands
@@ -64,6 +70,7 @@ const SETUP_PROVIDER_NAMES = ['deepseek', 'openai', 'openrouter', 'ollama', 'xai
 const SETUP_DEVICE_AUTH_PROVIDERS = [
   { key: 'copilot', name: 'GitHub Copilot', aliases: ['github'], command: '/setup copilot' },
   { key: 'chatgpt-subscription', name: 'ChatGPT Subscription', aliases: ['chatgptsubscription', 'chatgpt-sub', 'codex'], command: '/setup chatgpt-subscription' },
+  { key: 'anthropic-subscription', name: 'Claude Subscription (experimental)', aliases: ['anthropicsubscription', 'anthropic-sub', 'claude-subscription'], command: '/setup anthropic-subscription' },
 ];
 const SETUP_PROVIDER_HINT_NAMES = SETUP_PROVIDER_NAMES.concat(SETUP_DEVICE_AUTH_PROVIDERS.map(provider => provider.key));
 const SETUP_PROVIDER_HINT = SETUP_PROVIDER_HINT_NAMES.slice(0, -1).join(', ') + ', or ' + SETUP_PROVIDER_HINT_NAMES[SETUP_PROVIDER_HINT_NAMES.length - 1];
@@ -769,6 +776,10 @@ async function handleSetupInput(input) {
  * Handle setup wizard sub-modes (endpoint, theme, features).
  */
 async function handleSetupWizard(mode, input) {
+  if (mode === 'anthropic-subscription-callback') {
+    await _completeAnthropicSubscriptionSetup(input);
+    return;
+  }
   if (mode === 'endpoint-provider-first') {
     const detected = detectProvider(input);
     if (detected && !detected.ambiguous) {
@@ -5031,6 +5042,10 @@ function _clearSetupCommandInput() {
 }
 
 async function _setupProviderDeviceFlow(providerKey) {
+  if (providerKey === 'anthropic-subscription') {
+    await _setupAnthropicSubscriptionFlow();
+    return;
+  }
   _clearSetupGuideMessages();
   const config = PROVIDER_DEVICE_FLOWS[providerKey];
   if (!config) {
@@ -5076,6 +5091,51 @@ async function _setupProviderDeviceFlow(providerKey) {
     }
   } catch (e) {
     await _setupReply(formatDeviceFlowError(e));
+  }
+}
+
+async function _setupAnthropicSubscriptionFlow() {
+  _clearSetupGuideMessages();
+  pendingAnthropicSubscriptionAttempt = null;
+  await _setupReply('Starting Claude subscription sign-in...');
+  try {
+    const start = await startAnthropicSubscriptionOAuth();
+    pendingAnthropicSubscriptionAttempt = {
+      id: start.attemptId,
+      expiresAt: Date.now() + Math.max(start.expiresIn || 0, 1) * 1000,
+    };
+    setupMode = 'anthropic-subscription-callback';
+    slashReply(
+      '<div class="setup-guide-no-censor" style="display:grid;gap:6px;">' +
+        '<div>Open Anthropic, complete sign-in, then paste the returned callback URL or code here.</div>' +
+        '<div><a href="' + uiModule.esc(start.authorizationUrl) + '" target="_blank" rel="noopener noreferrer">Open Anthropic ↗</a></div>' +
+        '<div style="opacity:0.7;font-size:0.9em;">The callback is used once and is not saved in this browser.</div>' +
+      '</div>'
+    );
+  } catch (error) {
+    setupMode = false;
+    await _setupReply(formatAnthropicSubscriptionError(error, 'Could not start Claude subscription sign-in. Run /setup anthropic-subscription to try again.'));
+  }
+}
+
+async function _completeAnthropicSubscriptionSetup(callback) {
+  const attempt = pendingAnthropicSubscriptionAttempt;
+  // Never add a user bubble for this input: it can contain the authorization
+  // code and must not remain in the chat transcript or browser storage.
+  pendingAnthropicSubscriptionAttempt = null;
+  setupMode = false;
+  if (!attempt || Date.now() >= attempt.expiresAt) {
+    await _setupReply('Authorization expired. Run /setup anthropic-subscription to try again.');
+    return;
+  }
+  try {
+    const result = await completeAnthropicSubscriptionOAuth(attempt.id, callback);
+    const endpoint = result.endpoint || result || {};
+    const count = (endpoint.models || []).length;
+    if (modelsModule) await modelsModule.refreshModels(true);
+    await _setupReply(`Claude subscription connected${count ? ` — ${count} model${count === 1 ? '' : 's'} available.` : '.'}`);
+  } catch (error) {
+    await _setupReply(formatAnthropicSubscriptionError(error, 'Claude subscription sign-in could not be completed. Run /setup anthropic-subscription to try again.'));
   }
 }
 
@@ -5874,6 +5934,7 @@ const COMMANDS = {
       ollama:     { help: 'Ollama Cloud',  usage: '/setup ollama KEY',          handler: (a, c) => _cmdSetup(['ollama',     ...a], c) },
       copilot:    { help: 'GitHub Copilot', usage: '/setup copilot',            handler: (a, c) => _cmdSetup(['copilot',    ...a], c) },
       'chatgpt-subscription': { help: 'ChatGPT Subscription', alias: ['codex'], usage: '/setup chatgpt-subscription', handler: (a, c) => _cmdSetup(['chatgpt-subscription', ...a], c) },
+      'anthropic-subscription': { help: 'Claude Subscription (experimental)', alias: ['claude-subscription'], usage: '/setup anthropic-subscription', handler: (a, c) => _cmdSetup(['anthropic-subscription', ...a], c) },
       local:      { help: 'Local model server (vLLM / LM Studio / llama.cpp / Ollama)',
                     usage: '/setup local http://localhost:8000/v1',
                     handler: (a, c) => _cmdSetup(['local', ...a], c) },

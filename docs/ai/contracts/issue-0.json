@@ -1,0 +1,79 @@
+{
+  "issue": 0,
+  "generated": "2026-07-28",
+  "criteria": [
+    {
+      "criterion_id": "issue-0-c1",
+      "text": "1. From Admin or `/setup anthropic-subscription`, an authenticated user starts\n   a connection and sees an Anthropic authorization URL. Completing Claude\n   login and pasting the returned code creates or reconnects exactly that\n   owner's enabled endpoint and makes the curated Claude models selectable;\n   cancel, expiry, malformed paste, state mismatch, and replay leave stored\n   credentials unchanged and show a safe retryable error.",
+      "mode": "ui",
+      "test_file": "tests/contract/test_issue_0.py",
+      "test_id": "issue-0-c1: authorize_complete_and_safe_retry_wiring",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-0-c2",
+      "text": "2. Two simultaneous or sequential pending attempts have distinct state and\n   verifier values, are owner-bound and single-use, and cannot complete one\n   another's flow. A second user cannot view, resolve, reconnect, or disconnect\n   the first user's auth session or endpoint.",
+      "mode": "integration",
+      "test_file": "tests/contract/test_issue_0.py",
+      "test_id": "issue-0-c2: pending_attempts_and_resources_are_owner_scoped",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-0-c3",
+      "text": "3. When a linked access token expires within 60 seconds, concurrent requests\n   perform one refresh per auth session. A returned rotated refresh token and\n   access token are committed together before any caller proceeds; refresh\n   failure preserves a recoverable state and invalid/missing credentials\n   produce a reconnect-required response.",
+      "mode": "integration",
+      "test_file": "tests/contract/test_issue_0.py",
+      "test_id": "issue-0-c3: refresh_is_serialized_at_60_seconds_and_commits_rotation",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-0-c4",
+      "text": "4. A request through an Anthropic subscription endpoint sends\n   `Authorization: Bearer`, `anthropic-version`, and only the OAuth beta headers\n   required by the validated prior-art contract; it never sends `x-api-key`.\n   The same request through an Anthropic API-key endpoint still sends\n   `x-api-key`, does not gain OAuth-only betas/transforms, and passes its\n   existing regression tests unchanged.",
+      "mode": "integration",
+      "test_file": "tests/contract/test_issue_0.py",
+      "test_id": "issue-0-c4: oauth_and_api_key_transport_are_separate",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-0-c5",
+      "text": "5. OAuth requests apply the validated Claude system-prompt and tool\n   transformations in sync and streaming paths, while preserving normal\n   assistant text/tool behavior. No code path adds a 1M-context beta unless a\n   future explicit setting and test opt into it.",
+      "mode": "integration",
+      "test_file": "tests/contract/test_issue_0.py",
+      "test_id": "issue-0-c5: oauth_message_and_tool_transforms_apply_to_both_paths",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-0-c6",
+      "text": "6. OAuth 401/403 or invalid-grant responses tell the user to reconnect; 429\n   responses identify quota/rate limiting without claiming credentials are\n   invalid; denial, upstream, and network failures remain distinct and do not\n   log response bodies or tokens.",
+      "mode": "unit",
+      "test_file": "tests/contract/test_issue_0.py",
+      "test_id": "issue-0-c6: error_classes_preserve_reconnect_quota_and_safe_failures",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-0-c7",
+      "text": "7. Disconnect removes only the caller's endpoint/auth reference, clears its\n   models from selection, and leaves other owners and API-key Anthropic\n   endpoints untouched. Reconnect replaces credentials for the same owner\n   without creating duplicate active endpoints.",
+      "mode": "integration",
+      "test_file": "tests/contract/test_issue_0.py",
+      "test_id": "issue-0-c7: disconnect_and_reconnect_only_change_the_callers_resources",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-0-c8",
+      "text": "8. Access tokens, refresh tokens, authorization codes, PKCE verifiers, and\n   state values never appear in application logs, plaintext session headers,\n   browser storage, committed fixtures, or API responses; persisted tokens use\n   `EncryptedText`.",
+      "mode": "unit",
+      "test_file": "tests/contract/test_issue_0.py",
+      "test_id": "issue-0-c8: credentials_are_encrypted_and_never_exposed_or_persisted_in_headers",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-0-c9",
+      "text": "9. End-to-end success is claimed only after a local app health check, an\n   interactive OAuth completion (or an explicitly existing local Claude\n   login), a normal Odysseus chat producing a non-empty streamed Claude\n   response, a refresh-path smoke, and a control request proving an Anthropic\n   API key still works. If no eligible local login or interactive approval is\n   available, report the live smoke as blocked—not passed.",
+      "mode": "manual",
+      "status": "pending",
+      "reason": "Requires an eligible local Claude login or interactive approval and real streamed inference; the separate health-wiring assertion only supports this manual smoke."
+    }
+  ],
+  "stack": "python",
+  "not_tested": ["issue-0-c9"]
+}
