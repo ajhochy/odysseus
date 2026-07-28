@@ -19,11 +19,30 @@ existing Anthropic API-key path.
 
 ## Test status
 
-Baseline checks pending.
+- Static Python and JavaScript checks are green at commit `33ea46b`.
+- Focused OAuth contract/runtime checks: 30 Python tests and 6 Node tests
+  green.
+- Repository regression run: 4,792 passed, 4 skipped, with the single
+  unchanged macOS `/tmp` alias baseline test deselected and documented at
+  `docs/ai/issues/followup-macos-tmp-alias.md`.
+- Isolated app `/api/health` and `/api/ready` returned healthy/ready.
+- Admin and `/setup anthropic-subscription` were exercised in the live UI and
+  reached Anthropic's real signed-in consent page.
+- End-to-end callback, refresh, and inference remain blocked by Anthropic's
+  hCaptcha. No live-success claim has been made; see
+  `docs/ai/issues/followup-anthropic-live-captcha.md`.
 
 ## Next step
 
-Write the acceptance contract and focused failing tests, then implement.
+Complete the visible Anthropic CAPTCHA, paste the returned callback into the
+preserved Odysseus setup tab, then run the gated live test:
+
+```bash
+ODYSSEUS_ANTHROPIC_LIVE=1 \
+ODYSSEUS_LIVE_BASE_URL=http://127.0.0.1:7147 \
+.venv/bin/python -m pytest -q \
+  tests/live/test_anthropic_subscription_live.py
+```
 
 ## Recent coding-agent runs
 
