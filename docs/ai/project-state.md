@@ -2,53 +2,46 @@
 
 ## Current focus
 
-Add owner-scoped Anthropic subscription OAuth support without weakening the
-existing Anthropic API-key path.
+Prepare the Anthropic subscription OAuth model-inventory repair for human
+review. The connected account now supplies its model catalog dynamically, and
+all models exposed by that catalog have been exercised through Odysseus.
 
-## Branch
+## Active branch / PR
 
-`workflow/run-2026-07-28-anthropic-oauth`, based on freshly fetched
-`origin/dev` at `25a4d13`.
+- Branch: `workflow/run-2026-07-28-anthropic-oauth`
+- Fork target: `ajhochy/odysseus`
+- PR: none; merge decisions remain with a human reviewer.
 
-## Known risks
+## In progress
 
-- Anthropic subscription OAuth is a compatibility surface that may change.
-- Refresh tokens rotate and must be persisted atomically.
-- OAuth requests require different headers and request shaping from API-key
-  requests.
+- Final commit, fork push, and fork CI inspection.
+
+## Risks / known issues
+
+- Anthropic subscription OAuth remains an experimental compatibility surface
+  and may change independently of Odysseus.
+- The original broader live criterion still lacks a real Anthropic API-key
+  control account; the unchanged API-key path is covered by the complete
+  repository suite.
+- On macOS, the full suite must use `TMPDIR=/private/tmp` so Unix socket paths
+  stay short and `/tmp` does not diverge from its canonical `/private/tmp`
+  identity.
 
 ## Test status
 
-- Static Python and JavaScript checks are green at commit `33ea46b`.
-- Focused OAuth contract/runtime checks: 30 Python tests and 6 Node tests
-  green.
-- Repository regression run: 4,792 passed, 4 skipped, with the single
-  unchanged macOS `/tmp` alias baseline test deselected and documented at
-  `docs/ai/issues/followup-macos-tmp-alias.md`.
-- Isolated app `/api/health` and `/api/ready` returned healthy/ready.
-- Admin and `/setup anthropic-subscription` were exercised in the live UI and
-  reached Anthropic's real signed-in consent page.
-- End-to-end callback, refresh, and inference remain blocked by Anthropic's
-  hCaptcha. No live-success claim has been made; see
-  `docs/ai/issues/followup-anthropic-live-captcha.md`.
+- Static Python compilation and JavaScript syntax checks passed.
+- Focused OAuth/catalog suites: 254 passed.
+- Acceptance c10/c11: 2 passed.
+- Issue and PR gates: 4,800 passed, 4 skipped each.
+- Fresh-server probes: `/api/health` healthy; redacted subscription status
+  connected with 11 provider-advertised models.
+- Gated live test refreshed the catalog, matched endpoint state, and received a
+  non-empty real stream from every advertised model without a 404 or safe error
+  event.
+- Original OAuth UI evidence: [provider setup](evidence/anthropic-subscription-setup.png)
+  and [connected admin state](evidence/anthropic-subscription-admin.png).
 
 ## Next step
 
-Complete the visible Anthropic CAPTCHA, paste the returned callback into the
-preserved Odysseus setup tab, then run the gated live test:
-
-```bash
-ODYSSEUS_ANTHROPIC_LIVE=1 \
-ODYSSEUS_LIVE_BASE_URL=http://127.0.0.1:7147 \
-.venv/bin/python -m pytest -q \
-  tests/live/test_anthropic_subscription_live.py
-```
-
-## Recent coding-agent runs
-
-### 2026-07-28 — issue-0-anthropic-subscription-oauth
-- Files modified: `src/anthropic_subscription.py` (PKCE, exchange/refresh, headers, transforms, errors), `routes/anthropic_subscription_routes.py` (owner-scoped connect/status/disconnect and endpoint provisioning), `core/database.py` (encrypted auth expiry metadata), `src/endpoint_resolver.py`, `routes/chat_helpers.py`, `routes/model_routes.py`, `src/llm_core.py`, and `app.py` (runtime/transport/route wiring); focused Python tests; UI files were modified by the parallel UI worker.
-- Checks run: required baseline contracts failed as expected (Python 9 failed; Node 1 failed); focused Anthropic OAuth tests passed (21); adjacent ChatGPT Subscription, Anthropic, endpoint resolver, model-route, and streaming regressions passed (278). The required final contract rerun is the last handoff action.
-- Decisions made: minimal Odysseus-specific OAuth transforms, static no-probe model catalog, explicit token expiry, and request-local auth-mode metadata; see `docs/ai/decisions.md`.
-- Deviations from spec: none.
-- Concerns: Anthropic subscription OAuth remains an undocumented, opt-in compatibility surface; live account authorization, refresh, streamed inference, and API-key control smoke remain intentionally account-gated for the orchestrator.
+Commit and push the branch to the fork, inspect any triggered fork CI, then
+hand the branch to a human reviewer without merging it.

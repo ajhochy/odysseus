@@ -299,3 +299,82 @@ def test_oauth_headers_and_transforms_do_not_affect_api_key_shape():
     assert transformed["tools"][0]["name"] == "mcp_Read_file"
     assert subscription.strip_oauth_tool_name("mcp_Read_file") == "read_file"
     assert payload["tools"][0]["name"] == "read_file"
+
+
+def test_model_discovery_preserves_provider_order_and_oauth_headers(monkeypatch):
+    calls = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    pages = [
+        {
+            "data": [
+                {"id": "claude-opus-5"},
+                {"id": "claude-sonnet-5"},
+            ],
+            "has_more": True,
+            "last_id": "claude-sonnet-5",
+        },
+        {
+            "data": [
+                {"id": "claude-sonnet-5"},
+                {"id": "claude-fable-5"},
+            ],
+            "has_more": False,
+        },
+    ]
+
+    def fake_get(url, *, headers, params, timeout):
+        calls.append(
+            {
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "timeout": timeout,
+            }
+        )
+        return Response(pages.pop(0))
+
+    monkeypatch.setattr(subscription.httpx, "get", fake_get)
+
+    assert subscription.fetch_available_models(
+        "synthetic-access", timeout=7
+    ) == [
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-fable-5",
+    ]
+    assert [call["params"] for call in calls] == [
+        None,
+        {"after_id": "claude-sonnet-5"},
+    ]
+    assert all(
+        call["url"] == "https://api.anthropic.com/v1/models"
+        for call in calls
+    )
+    assert all(
+        call["headers"]["Authorization"] == "Bearer synthetic-access"
+        for call in calls
+    )
+    assert all("x-api-key" not in call["headers"] for call in calls)
+
+
+def test_model_discovery_failure_never_exposes_upstream_body(monkeypatch):
+    def fake_get(*_args, **_kwargs):
+        return httpx.Response(
+            502,
+            json={"error": "synthetic-access secret response"},
+        )
+
+    monkeypatch.setattr(subscription.httpx, "get", fake_get)
+
+    with pytest.raises(subscription.AnthropicSubscriptionError) as raised:
+        subscription.fetch_available_models("synthetic-access")
+    assert "synthetic-access" not in str(raised.value)

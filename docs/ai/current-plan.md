@@ -14,8 +14,8 @@ boundaries, compatibility constraints, and live-test requirement are concrete.
 ## Intent and constraints
 
 - **In scope:** Claude PKCE authorization with pasted callback code; encrypted,
-  owner-scoped token storage; serialized rotating refresh; a static supported
-  model catalog; runtime resolution; OAuth-specific Anthropic headers and
+  owner-scoped token storage; serialized rotating refresh; an authenticated
+  provider model inventory with a last-good cache; runtime resolution; OAuth-specific Anthropic headers and
   message/tool shaping; admin and `/setup` connect/reconnect/disconnect UX;
   focused, full-suite, and live inference verification.
 - **Out of scope:** multi-account rotation, importing credentials without
@@ -32,10 +32,10 @@ boundaries, compatibility constraints, and live-test requirement are concrete.
   behavior without coupling the API-key path to an undocumented surface that
   may change. Keep OAuth-specific behavior narrowly isolated and covered by
   request-shape tests.
-- **Cheapest proof:** connect one owner with PKCE, provision one endpoint from a
-  curated catalog, send one minimal streamed prompt through the normal chat
-  path, then force a refresh and repeat. Reconnect/disconnect and failure UX
-  follow the same owner-scoped boundary.
+- **Cheapest proof:** connect one owner with PKCE, refresh its authenticated
+  provider inventory, then send a minimal streamed prompt through every
+  advertised model. Reconnect/disconnect and failure UX follow the same
+  owner-scoped boundary.
 
 ## Prior art
 
@@ -64,7 +64,7 @@ boundaries, compatibility constraints, and live-test requirement are concrete.
 | --- | --- | --- | --- | --- | --- |
 | 1 | Lock the Anthropic OAuth contract | Add failing tests for PKCE/state, exchange, 60-second refresh skew, token rotation, owner isolation, error classes, and secret redaction. | `tests/test_anthropic_subscription.py`, `tests/test_anthropic_subscription_routes.py`, `tests/test_resolve_session_auth_anthropic.py` | Tests fail only for the missing feature; fixtures contain synthetic tokens only. | None |
 | 2 | Add the owner-scoped OAuth service and setup routes | Implement authorization start/complete/status/disconnect, encrypted auth-session upsert, curated models, endpoint provisioning, reconnect, and serialized refresh. | `src/anthropic_subscription.py`, `routes/anthropic_subscription_routes.py`, `app.py`, `core/database.py` only if the existing schema proves insufficient | Issue 1 service/route tests; malformed, expired, replayed, wrong-owner, denied, 401/403, and 429 cases. | 1 |
-| 3 | Separate OAuth runtime transport from API-key Anthropic | Resolve the auth session at request time, preserve OAuth bearer auth, add only required OAuth betas/transforms, keep tokens request-local, and leave API-key headers/payloads unchanged. | `src/endpoint_resolver.py`, `routes/chat_helpers.py`, `routes/model_routes.py`, `src/llm_core.py` | Header/payload snapshots for both auth modes; concurrency/rotation; static-catalog/no-probe; sync and streamed chat regressions. | 2 |
+| 3 | Separate OAuth runtime transport from API-key Anthropic | Resolve the auth session at request time, preserve OAuth bearer auth, add only required OAuth betas/transforms, keep tokens request-local, and leave API-key headers/payloads unchanged. | `src/endpoint_resolver.py`, `routes/chat_helpers.py`, `routes/model_routes.py`, `src/llm_core.py` | Header/payload snapshots for both auth modes; concurrency/rotation; authenticated model inventory with last-good retention; sync and streamed chat regressions. | 2 |
 | 4 | Wire connect, reconnect, and disconnect UX | Add Anthropic Subscription to admin and `/setup`, open the authorize URL, accept pasted callback input, show status/errors, refresh models, and expose reconnect/disconnect without displaying secrets. | `static/index.html`, `static/js/admin.js`, `static/js/slashCommands.js`, a small shared OAuth helper under `static/js/` if useful | Node DOM-free flow tests plus static wiring tests for success, cancel, invalid paste, expiry, retry, reconnect, and disconnect. | 2 |
 | 5 | Verify the full compatibility path | Run focused and full regression checks, then perform a deliberate Claude login/refresh/stream smoke and record evidence without credentials. | Test files above; `docs/ai/project-state.md` only after verified implementation | Compile, Python suite, JS syntax/tests, health check, OAuth connect, non-empty streamed response, forced/near-expiry refresh, API-key control request. | 3, 4 |
 

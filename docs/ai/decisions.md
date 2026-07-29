@@ -41,3 +41,16 @@ plaintext persisted headers and resolve a new credential on every request.
 `ProviderAuthSession.expires_at` records token expiry explicitly because
 Anthropic access tokens are not assumed to be JWTs. The startup migration adds
 the nullable column for existing databases.
+
+## 2026-07-29 — Discover subscription models at the OAuth boundary
+
+The live account proved that a static subscription catalog becomes stale and
+can advertise model IDs that return HTTP 404. Subscription refresh now resolves
+the owner-scoped `ProviderAuthSession` to a request-local `RuntimeCredential`
+and fetches Anthropic's ordered `/v1/models` inventory with the established
+OAuth header fingerprint.
+
+The small curated list remains only as an emergency initial-provisioning
+fallback. It never replaces a provider inventory during refresh: successful
+discovery replaces `cached_models`, while failed or empty discovery retains the
+last known-good cache. Anthropic API-key discovery remains unchanged.

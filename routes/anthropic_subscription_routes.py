@@ -55,7 +55,12 @@ def _provision_endpoint(tokens: Dict[str, Any], owner: Optional[str]) -> Dict[st
         )
 
     base = anthropic_subscription.DEFAULT_ANTHROPIC_SUBSCRIPTION_BASE_URL
-    models = list(anthropic_subscription.CURATED_ANTHROPIC_SUBSCRIPTION_MODELS)
+    try:
+        discovered_models = anthropic_subscription.fetch_available_models(
+            access_token
+        )
+    except Exception:
+        discovered_models = []
     db = SessionLocal()
     try:
         auth = (
@@ -107,6 +112,24 @@ def _provision_endpoint(tokens: Dict[str, Any], owner: Optional[str]) -> Dict[st
                 owner=owner,
             )
             db.add(endpoint)
+        cached_models: list[str] = []
+        try:
+            loaded = json.loads(endpoint.cached_models or "[]")
+            if isinstance(loaded, list):
+                cached_models = [
+                    str(model)
+                    for model in loaded
+                    if isinstance(model, str) and model
+                ]
+        except (TypeError, ValueError):
+            pass
+        models = (
+            discovered_models
+            or cached_models
+            or list(
+                anthropic_subscription.CURATED_ANTHROPIC_SUBSCRIPTION_MODELS
+            )
+        )
         endpoint.name = "Anthropic Subscription (experimental)"
         endpoint.base_url = base
         endpoint.api_key = None
@@ -117,6 +140,23 @@ def _provision_endpoint(tokens: Dict[str, Any], owner: Optional[str]) -> Dict[st
         endpoint.model_refresh_mode = "manual"
         endpoint.supports_tools = True
         endpoint.cached_models = json.dumps(models)
+        if discovered_models:
+            available = set(models)
+            for attr in ("pinned_models", "hidden_models"):
+                try:
+                    current = json.loads(getattr(endpoint, attr, None) or "[]")
+                except (TypeError, ValueError):
+                    current = []
+                retained = [
+                    model
+                    for model in current
+                    if isinstance(model, str) and model in available
+                ]
+                setattr(
+                    endpoint,
+                    attr,
+                    json.dumps(retained) if retained else None,
+                )
         db.commit()
         result = {
             "id": endpoint.id,

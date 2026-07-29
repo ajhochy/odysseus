@@ -28,6 +28,7 @@ ANTHROPIC_SUBSCRIPTION_AUTH_MODE = "anthropic-subscription"
 DEFAULT_ANTHROPIC_SUBSCRIPTION_BASE_URL = "https://api.anthropic.com"
 ANTHROPIC_OAUTH_AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
 ANTHROPIC_OAUTH_TOKEN_URL = "https://claude.ai/v1/oauth/token"
+ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models"
 ANTHROPIC_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 ANTHROPIC_OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 ANTHROPIC_OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
@@ -46,8 +47,9 @@ OAUTH_BETA = ",".join(OAUTH_BETAS)
 assert all("1m" not in beta.lower() for beta in OAUTH_BETAS)
 
 CURATED_ANTHROPIC_SUBSCRIPTION_MODELS = (
-    "claude-opus-4-7",
-    "claude-sonnet-4-6",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
     "claude-haiku-4-5-20251001",
 )
 
@@ -475,6 +477,75 @@ def anthropic_subscription_headers(access_token: Optional[str]) -> Dict[str, str
     # OAuth must never be rewritten to Anthropic's API-key transport.
     headers.pop("x-api-key", None)
     return headers
+
+
+def fetch_available_models(
+    access_token: str,
+    *,
+    timeout: float = 10.0,
+) -> list[str]:
+    """Return the subscription account's ordered Anthropic model inventory."""
+    if not access_token:
+        raise AnthropicSubscriptionReauthRequired(
+            "Anthropic subscription credentials are missing. Reconnect the provider."
+        )
+
+    models: list[str] = []
+    seen_models: set[str] = set()
+    seen_cursors: set[str] = set()
+    params: Optional[Dict[str, str]] = None
+
+    for _ in range(20):
+        response = httpx.get(
+            ANTHROPIC_MODELS_URL,
+            headers=anthropic_subscription_headers(access_token),
+            params=params,
+            timeout=timeout,
+        )
+        _raise_for_oauth_response(response, "model discovery")
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise AnthropicSubscriptionError(
+                "Anthropic subscription model discovery returned invalid JSON."
+            ) from exc
+        if not isinstance(payload, dict):
+            raise AnthropicSubscriptionError(
+                "Anthropic subscription model discovery returned an unexpected response."
+            )
+
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise AnthropicSubscriptionError(
+                "Anthropic subscription model discovery returned an unexpected response."
+            )
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            if (
+                isinstance(model_id, str)
+                and model_id
+                and model_id not in seen_models
+            ):
+                seen_models.add(model_id)
+                models.append(model_id)
+
+        if not payload.get("has_more"):
+            break
+        cursor = str(payload.get("last_id") or "").strip()
+        if not cursor or cursor in seen_cursors:
+            raise AnthropicSubscriptionError(
+                "Anthropic subscription model discovery returned invalid pagination."
+            )
+        seen_cursors.add(cursor)
+        params = {"after_id": cursor}
+    else:
+        raise AnthropicSubscriptionError(
+            "Anthropic subscription model discovery exceeded its page limit."
+        )
+
+    return models
 
 
 def is_anthropic_subscription_headers(headers: Any) -> bool:

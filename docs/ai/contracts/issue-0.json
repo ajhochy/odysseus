@@ -1,6 +1,6 @@
 {
   "issue": 0,
-  "generated": "2026-07-28",
+  "generated": "2026-07-29",
   "criteria": [
     {
       "criterion_id": "issue-0-c1",
@@ -72,6 +72,30 @@
       "mode": "manual",
       "status": "pending",
       "reason": "Requires an eligible local Claude login or interactive approval and real streamed inference; the separate health-wiring assertion only supports this manual smoke."
+    },
+    {
+      "criterion_id": "issue-0-c10",
+      "text": "An authenticated Anthropic subscription model refresh uses the owner-scoped OAuth bearer and OAuth headers to return the provider's ordered `/v1/models` inventory; it never substitutes Odysseus's generic Anthropic API-key fallback list.",
+      "mode": "integration",
+      "test_file": "tests/contract/test_issue_0.py",
+      "test_id": "issue-0-c10: authenticated_model_inventory_never_uses_api_key_fallback",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-0-c11",
+      "text": "Existing connected subscription endpoints adopt a successful refreshed inventory without reauthorization, and a failed refresh retains the last known-good cache.",
+      "mode": "integration",
+      "test_file": "tests/contract/test_issue_0.py",
+      "test_id": "issue-0-c11: refresh_updates_existing_cache_and_preserves_last_good_inventory",
+      "status": "pass"
+    },
+    {
+      "criterion_id": "issue-0-c12",
+      "text": "Every model advertised after refresh completes a minimal live streamed request without HTTP 404 or an empty response.",
+      "mode": "integration",
+      "test_file": "tests/live/test_anthropic_subscription_live.py",
+      "test_id": "issue-0-c12: live_subscription_stream_through_running_odysseus",
+      "status": "pass"
     }
   ],
   "stack": "python",

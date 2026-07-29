@@ -29,6 +29,11 @@ CONTEXT_FILES = (
 def run(command: list[str]) -> int:
     env = os.environ.copy()
     env.setdefault("PYTHONPYCACHEPREFIX", "/tmp/odysseus-ai-workflow-pycache")
+    if sys.platform == "darwin":
+        # macOS exposes /tmp through a /private/tmp symlink. Pytest's longer
+        # per-user temp root can overflow AF_UNIX paths, while the alias split
+        # can also make path-confinement assertions compare unlike roots.
+        env["TMPDIR"] = "/private/tmp"
     return subprocess.run(command, cwd=ROOT, env=env, check=False).returncode
 
 

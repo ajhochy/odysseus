@@ -207,3 +207,163 @@ def test_issue_0_health_wiring_exists_before_manual_live_smoke():
     _require_all(app, "setup_anthropic_subscription_routes", "include_router")
     _require_all(routes, "APIRouter")
     _require_all(health, "ModelEndpoint", "is_enabled")
+
+
+def test_issue_0_c10_authenticated_model_inventory_never_uses_api_key_fallback(
+    monkeypatch,
+):
+    """Regression: OAuth refresh silently swaps in Odysseus's stale API-key list."""
+    import routes.model_routes as model_routes
+    from src import anthropic_subscription
+    from src.endpoint_resolver import RuntimeCredential
+
+    provider_models = [
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-fable-5",
+        "claude-haiku-4-5-20251001",
+    ]
+    observed = {}
+
+    class ProviderResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": model} for model in provider_models]}
+
+    def fake_get(url, *, headers, params=None, timeout=None, **kwargs):
+        observed.update(
+            {
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "timeout": timeout,
+            }
+        )
+        return ProviderResponse()
+
+    monkeypatch.setattr(anthropic_subscription.httpx, "get", fake_get)
+    credential = RuntimeCredential(
+        "synthetic-oauth-access", "anthropic-subscription"
+    )
+
+    result = model_routes._probe_endpoint(
+        "https://api.anthropic.com", credential, timeout=7
+    )
+
+    assert result == provider_models
+    assert observed["url"] == "https://api.anthropic.com/v1/models"
+    assert observed["headers"]["Authorization"] == (
+        "Bearer synthetic-oauth-access"
+    )
+    assert "x-api-key" not in {
+        str(key).lower() for key in observed["headers"]
+    }
+
+
+def test_issue_0_c11_refresh_updates_existing_cache_and_preserves_last_good_inventory(
+    monkeypatch,
+):
+    """Regression: refresh loses auth mode or erases a good cache after discovery fails."""
+    import json
+    from types import SimpleNamespace
+
+    from fastapi import Response
+    import routes.model_routes as model_routes
+    from src.endpoint_resolver import RuntimeCredential
+
+    endpoint = SimpleNamespace(
+        id="subscription-endpoint",
+        name="Anthropic Subscription (experimental)",
+        base_url="https://api.anthropic.com",
+        api_key=None,
+        provider_auth_id="subscription-auth",
+        owner="alice",
+        is_enabled=True,
+        cached_models=json.dumps(["claude-sonnet-4-5"]),
+        hidden_models=json.dumps(["claude-haiku-3-5"]),
+        pinned_models=json.dumps(["claude-haiku-3-5"]),
+        endpoint_kind="api",
+        model_refresh_mode="manual",
+        model_refresh_timeout=None,
+    )
+
+    class Query:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return endpoint
+
+    class Database:
+        def query(self, model):
+            return Query()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    credential = RuntimeCredential(
+        "synthetic-oauth-access", "anthropic-subscription"
+    )
+    provider_models = ["claude-opus-5", "claude-sonnet-5"]
+    state = {"fail": False, "resolved": 0}
+
+    def fake_resolve_probe_key(ep):
+        assert ep is endpoint
+        state["resolved"] += 1
+        return credential
+
+    def fake_probe(base, api_key, timeout):
+        assert base == "https://api.anthropic.com"
+        if state["fail"]:
+            return []
+        if getattr(api_key, "auth_mode", None) == "anthropic-subscription":
+            return provider_models
+        return []
+
+    monkeypatch.setattr(model_routes, "SessionLocal", Database)
+    monkeypatch.setattr(model_routes, "require_admin", lambda request: None)
+    monkeypatch.setattr(model_routes, "_resolve_probe_key", fake_resolve_probe_key)
+    monkeypatch.setattr(model_routes, "_probe_endpoint", fake_probe)
+
+    router = model_routes.setup_model_routes(model_discovery=None)
+    route = next(
+        item.endpoint
+        for item in router.routes
+        if item.path == "/api/model-endpoints/{ep_id}/models"
+        and "GET" in item.methods
+    )
+
+    refreshed_response = Response()
+    refreshed = route(
+        endpoint.id,
+        object(),
+        refreshed_response,
+        refresh=True,
+        refresh_timeout=7,
+    )
+    assert [item["id"] for item in refreshed] == provider_models
+    assert json.loads(endpoint.cached_models) == provider_models
+    assert endpoint.pinned_models is None
+    assert endpoint.hidden_models is None
+    assert refreshed_response.headers["X-Model-Refresh-Status"] == "refreshed"
+
+    state["fail"] = True
+    failed_response = Response()
+    retained = route(
+        endpoint.id,
+        object(),
+        failed_response,
+        refresh=True,
+        refresh_timeout=7,
+    )
+    assert [item["id"] for item in retained] == provider_models
+    assert json.loads(endpoint.cached_models) == provider_models
+    assert failed_response.headers["X-Model-Refresh-Status"] == "failed"
+    assert state["resolved"] == 2

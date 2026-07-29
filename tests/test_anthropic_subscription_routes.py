@@ -1,5 +1,6 @@
 """Owner-scoped Anthropic subscription route/provisioning regressions."""
 
+import json
 from datetime import datetime
 
 from sqlalchemy import create_engine
@@ -15,6 +16,13 @@ def _mem_db(monkeypatch):
     Base.metadata.create_all(bind=engine)
     TestSessionLocal = sessionmaker(bind=engine, autoflush=False)
     monkeypatch.setattr(routes, "SessionLocal", TestSessionLocal)
+    monkeypatch.setattr(
+        subscription,
+        "fetch_available_models",
+        lambda *_args, **_kwargs: list(
+            subscription.CURATED_ANTHROPIC_SUBSCRIPTION_MODELS
+        ),
+    )
     return TestSessionLocal
 
 
@@ -29,6 +37,15 @@ def _tokens(access="synthetic-access", refresh="synthetic-refresh"):
 def test_provision_reconnects_same_owner_without_duplicate_endpoint(monkeypatch):
     TestSessionLocal = _mem_db(monkeypatch)
     first = routes._provision_endpoint(_tokens(), "alice")
+    db = TestSessionLocal()
+    endpoint = db.query(ModelEndpoint).filter(ModelEndpoint.owner == "alice").one()
+    endpoint.pinned_models = json.dumps(
+        ["claude-sonnet-5", "claude-haiku-3-5"]
+    )
+    endpoint.hidden_models = json.dumps(["claude-haiku-3-5"])
+    db.commit()
+    db.close()
+
     second = routes._provision_endpoint(
         _tokens("synthetic-new-access", "synthetic-new-refresh"), "alice"
     )
@@ -73,6 +90,45 @@ def test_status_is_redacted_and_owner_scoped(monkeypatch):
     assert alice["endpoint"]["models"]
     assert "synthetic" not in repr(alice)
     assert bob == {"connected": False, "experimental": True}
+
+
+def test_reconnect_adopts_discovered_inventory_and_keeps_last_good_on_failure(
+    monkeypatch,
+):
+    TestSessionLocal = _mem_db(monkeypatch)
+    first_inventory = ["claude-opus-5", "claude-sonnet-5"]
+    second_inventory = ["claude-fable-5", "claude-opus-4-8"]
+    inventories = iter([first_inventory, second_inventory])
+    monkeypatch.setattr(
+        subscription,
+        "fetch_available_models",
+        lambda *_args, **_kwargs: next(inventories),
+    )
+
+    first = routes._provision_endpoint(_tokens(), "alice")
+    second = routes._provision_endpoint(
+        _tokens("synthetic-new-access", "synthetic-new-refresh"), "alice"
+    )
+
+    assert first["models"] == first_inventory
+    assert second["models"] == second_inventory
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("safe model discovery failure")
+
+    monkeypatch.setattr(subscription, "fetch_available_models", fail)
+    retained = routes._provision_endpoint(
+        _tokens("synthetic-third-access", "synthetic-third-refresh"), "alice"
+    )
+    assert retained["id"] == first["id"]
+    assert retained["models"] == second_inventory
+
+    db = TestSessionLocal()
+    endpoint = db.query(ModelEndpoint).filter(ModelEndpoint.owner == "alice").one()
+    assert endpoint.cached_models == json.dumps(second_inventory)
+    assert endpoint.pinned_models is None
+    assert endpoint.hidden_models is None
+    db.close()
 
 
 def test_disconnect_only_removes_callers_subscription_resources(monkeypatch):
