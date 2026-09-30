@@ -6,6 +6,13 @@ import settingsModule from './settings.js';
 import { providerLogo, providerLogoFromUrl } from './providers.js';
 import { sortModelObjects } from './modelSort.js';
 import { PROVIDER_DEVICE_FLOWS, formatDeviceFlowError, runProviderDeviceFlow } from './providerDeviceFlow.js';
+import {
+  completeAnthropicSubscriptionOAuth,
+  disconnectAnthropicSubscription,
+  formatAnthropicSubscriptionError,
+  getAnthropicSubscriptionStatus,
+  startAnthropicSubscriptionOAuth,
+} from './anthropicSubscriptionFlow.js';
 
 let initialized = false;
 let modalEl = null;
@@ -809,6 +816,8 @@ function initEndpointForm() {
   const pickerCurrent = picker ? picker.querySelector('.adm-provider-current') : null;
   const DEVICE_AUTH_PROVIDER_VALUES = new Set(Object.keys(PROVIDER_DEVICE_FLOWS));
   let deviceAuthPolling = false;
+  let anthropicSubscriptionBusy = false;
+  let anthropicSubscriptionAttempt = null;
   function _selectedProviderOption() {
     return provider && provider.selectedOptions ? provider.selectedOptions[0] : null;
   }
@@ -821,6 +830,9 @@ function initEndpointForm() {
   function _isDeviceAuthSelected() {
     return !!_selectedDeviceAuthProvider();
   }
+  function _isAnthropicSubscriptionSelected() {
+    return provider && provider.value === 'anthropic-subscription';
+  }
   function _setApiFormForProvider() {
     const deviceAuthProvider = _selectedDeviceAuthProvider();
     const deviceAuthConfig = PROVIDER_DEVICE_FLOWS[deviceAuthProvider] || null;
@@ -829,11 +841,13 @@ function initEndpointForm() {
     const addBtn = el('adm-epAddBtn');
     const status = el('adm-deviceAuthStatus');
     const msg = _endpointMsg('api');
-    if (deviceAuthConfig) {
+    if (deviceAuthConfig || _isAnthropicSubscriptionSelected()) {
       urlInput.value = '';
-      urlInput.placeholder = deviceAuthProvider === 'copilot'
-        ? 'GitHub Copilot uses GitHub account sign-in'
-        : 'ChatGPT Subscription uses OpenAI account sign-in';
+      urlInput.placeholder = _isAnthropicSubscriptionSelected()
+        ? 'Claude subscription uses Anthropic account sign-in'
+        : deviceAuthProvider === 'copilot'
+          ? 'GitHub Copilot uses GitHub account sign-in'
+          : 'ChatGPT Subscription uses OpenAI account sign-in';
       urlInput.readOnly = true;
       if (apiKey) {
         apiKey.value = '';
@@ -847,7 +861,7 @@ function initEndpointForm() {
       }
       if (addBtn) {
         addBtn.disabled = false;
-        addBtn.textContent = 'Add';
+        addBtn.textContent = _isAnthropicSubscriptionSelected() ? 'Connect' : 'Add';
         addBtn.style.width = '55px';
         addBtn.style.display = '';
       }
@@ -855,6 +869,9 @@ function initEndpointForm() {
       if (msg) {
         msg.textContent = '';
         msg.className = '';
+      }
+      if (_isAnthropicSubscriptionSelected() && !anthropicSubscriptionBusy && !anthropicSubscriptionAttempt) {
+        _refreshAnthropicSubscriptionStatus();
       }
     } else {
       urlInput.placeholder = 'Base URL or pick provider';
@@ -879,6 +896,7 @@ function initEndpointForm() {
         msg.className = '';
       }
       if (!deviceAuthPolling && status) status.textContent = '';
+      anthropicSubscriptionAttempt = null;
     }
   }
   function _renderPickerMenu() {
@@ -1087,6 +1105,10 @@ function initEndpointForm() {
   }
 
   el('adm-epAddBtn').addEventListener('click', async () => {
+    if (_isAnthropicSubscriptionSelected()) {
+      await _startAnthropicSubscriptionOAuth(el('adm-epAddBtn'));
+      return;
+    }
     const deviceAuthProvider = _selectedDeviceAuthProvider();
     if (deviceAuthProvider) {
       await _startProviderDeviceAuth(deviceAuthProvider, el('adm-epAddBtn'));
@@ -1144,6 +1166,152 @@ function initEndpointForm() {
     } catch (e) { msg.textContent = 'Request failed'; msg.className = 'admin-error'; }
     btn.disabled = false; btn.textContent = 'Add';
   });
+
+  function _renderAnthropicSubscriptionError(text, triggerEl) {
+    const status = el('adm-deviceAuthStatus') || _endpointMsg('api');
+    if (!status) return;
+    status.className = 'admin-error';
+    status.textContent = text + ' ';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'admin-btn-sm';
+    retry.textContent = 'Try again';
+    retry.addEventListener('click', () => { _startAnthropicSubscriptionOAuth(triggerEl); });
+    status.appendChild(retry);
+  }
+
+  function _resetAnthropicSubscriptionButton(triggerEl, text = 'Connect') {
+    anthropicSubscriptionBusy = false;
+    if (triggerEl) {
+      triggerEl.disabled = false;
+      triggerEl.textContent = text;
+    }
+  }
+
+  async function _refreshAnthropicSubscriptionStatus() {
+    if (!_isAnthropicSubscriptionSelected() || anthropicSubscriptionBusy || anthropicSubscriptionAttempt) return;
+    const status = el('adm-deviceAuthStatus') || _endpointMsg('api');
+    if (!status) return;
+    try {
+      const connection = await getAnthropicSubscriptionStatus();
+      if (!_isAnthropicSubscriptionSelected() || anthropicSubscriptionBusy || anthropicSubscriptionAttempt) return;
+      const connected = !!(connection && (connection.connected || connection.endpoint || connection.id || connection.status === 'connected'));
+      status.textContent = '';
+      if (!connected) {
+        const addBtn = el('adm-epAddBtn');
+        if (addBtn) addBtn.textContent = 'Connect';
+        status.className = 'adm-ep-inline-msg';
+        status.textContent = 'Connect an eligible Claude subscription. No API key is needed.';
+        return;
+      }
+      const addBtn = el('adm-epAddBtn');
+      if (addBtn) addBtn.textContent = 'Reconnect';
+      status.className = 'admin-success';
+      status.append(document.createTextNode('Claude subscription connected. '));
+      const disconnect = document.createElement('button');
+      disconnect.type = 'button';
+      disconnect.className = 'admin-btn-sm';
+      disconnect.textContent = 'Disconnect';
+      disconnect.addEventListener('click', async () => {
+        disconnect.disabled = true;
+        try {
+          await disconnectAnthropicSubscription();
+          const addBtn = el('adm-epAddBtn');
+          if (addBtn) addBtn.textContent = 'Connect';
+          status.className = 'adm-ep-inline-msg';
+          status.textContent = 'Claude subscription disconnected.';
+          if (window.modelsModule && window.modelsModule.refreshModels) await window.modelsModule.refreshModels(true);
+          await loadEndpoints();
+        } catch (error) {
+          _renderAnthropicSubscriptionError(formatAnthropicSubscriptionError(error, 'Could not disconnect Claude subscription.'));
+        }
+      });
+      status.appendChild(disconnect);
+    } catch (error) {
+      // A missing connection is expected before first setup. Other response
+      // details are intentionally not rendered because they can contain OAuth data.
+      if (error && error.status !== 404 && _isAnthropicSubscriptionSelected()) {
+        status.className = 'adm-ep-inline-msg';
+        status.textContent = 'Claude subscription status is unavailable. You can try connecting again.';
+      }
+    }
+  }
+
+  async function _startAnthropicSubscriptionOAuth(triggerEl) {
+    if (anthropicSubscriptionBusy || !_isAnthropicSubscriptionSelected()) return;
+    const status = el('adm-deviceAuthStatus') || _endpointMsg('api');
+    if (!status) return;
+    anthropicSubscriptionBusy = true;
+    if (triggerEl) {
+      triggerEl.disabled = true;
+      triggerEl.textContent = 'Starting...';
+    }
+    status.className = 'adm-ep-inline-msg';
+    status.textContent = 'Starting Claude subscription sign-in...';
+    try {
+      const start = await startAnthropicSubscriptionOAuth();
+      anthropicSubscriptionAttempt = {
+        id: start.attemptId,
+        expiresAt: Date.now() + Math.max(start.expiresIn || 0, 1) * 1000,
+      };
+      status.textContent = '';
+      status.className = 'adm-ep-inline-msg';
+      const instructions = document.createElement('div');
+      instructions.textContent = 'Open Anthropic, finish sign-in, then paste the returned callback below.';
+      const authorize = document.createElement('a');
+      authorize.className = 'admin-btn-add';
+      authorize.href = start.authorizationUrl;
+      authorize.target = '_blank';
+      authorize.rel = 'noopener noreferrer';
+      authorize.textContent = 'Open Anthropic ↗';
+      const callback = document.createElement('textarea');
+      callback.className = 'adm-anthropic-callback';
+      callback.placeholder = 'Paste the returned callback URL or code';
+      callback.autocomplete = 'off';
+      callback.rows = 2;
+      callback.style.cssText = 'width:100%;margin-top:7px;box-sizing:border-box;';
+      const complete = document.createElement('button');
+      complete.type = 'button';
+      complete.className = 'admin-btn-sm';
+      complete.textContent = 'Complete connection';
+      complete.style.marginTop = '6px';
+      complete.addEventListener('click', async () => {
+        const attempt = anthropicSubscriptionAttempt;
+        const pastedCallback = callback.value;
+        callback.value = '';
+        if (!attempt || Date.now() >= attempt.expiresAt) {
+          anthropicSubscriptionAttempt = null;
+          _resetAnthropicSubscriptionButton(triggerEl);
+          _renderAnthropicSubscriptionError('Authorization expired.', triggerEl);
+          return;
+        }
+        complete.disabled = true;
+        try {
+          // Clear the one-use in-memory attempt before completing so a retry
+          // starts a fresh PKCE transaction even if completion fails.
+          anthropicSubscriptionAttempt = null;
+          const result = await completeAnthropicSubscriptionOAuth(attempt.id, pastedCallback);
+          const endpoint = result.endpoint || result || {};
+          const count = (endpoint.models || []).length;
+          status.className = 'admin-success';
+          status.textContent = 'Claude subscription connected' + (count ? ` — ${count} model${count === 1 ? '' : 's'} available.` : '.');
+          if (endpoint.id) _recentlyAddedEpId = String(endpoint.id);
+          await loadEndpoints();
+          await _selectAddedModelInChat(endpoint);
+          if (window.modelsModule && window.modelsModule.refreshModels) await window.modelsModule.refreshModels(true);
+          _resetAnthropicSubscriptionButton(triggerEl, 'Reconnect');
+        } catch (error) {
+          _resetAnthropicSubscriptionButton(triggerEl);
+          _renderAnthropicSubscriptionError(formatAnthropicSubscriptionError(error), triggerEl);
+        }
+      });
+      status.append(instructions, authorize, callback, complete);
+      if (triggerEl) triggerEl.textContent = 'Waiting...';
+    } catch (error) {
+      _resetAnthropicSubscriptionButton(triggerEl);
+      _renderAnthropicSubscriptionError(formatAnthropicSubscriptionError(error, 'Could not start Claude subscription sign-in.'), triggerEl);
+    }
+  }
 
   async function _startProviderDeviceAuth(providerKey, triggerEl = null) {
     if (deviceAuthPolling) return;

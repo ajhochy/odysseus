@@ -1,0 +1,78 @@
+{
+  "patterns": [
+    {
+      "id": "c2-wrong-contract",
+      "category": "C2",
+      "description": "Wrong contract failures: 4 occurrence(s) across issues []",
+      "occurrences": 4,
+      "affected_issues": [],
+      "affected_skills": [
+        "acceptance-contract"
+      ],
+      "reason": "A contract test passed but the criterion was broken in manual smoke \u2014 the test asserted the wrong thing.",
+      "suggested_prompt_addition": "When writing contract tests, verify the assertion directly matches the user-observable outcome, not an internal implementation detail.",
+      "evidence_files": [
+        "/Users/ajhochhalter/Documents/odysseus-anthropic-oauth/.agent-stack/postmortems/2026-07-28-issue-0.json",
+        "/Users/ajhochhalter/Documents/odysseus-anthropic-oauth/.agent-stack/postmortems/2026-07-28-issue-0.json",
+        "/Users/ajhochhalter/Documents/odysseus-anthropic-oauth/.agent-stack/postmortems/2026-07-29-issue-0.json",
+        "/Users/ajhochhalter/Documents/odysseus-anthropic-oauth/.agent-stack/postmortems/2026-07-29-issue-0.json"
+      ]
+    }
+  ],
+  "process_patterns": [
+    {
+      "id": "p1-ci-gate-skipped",
+      "category": "P1",
+      "description": "CI gate skipped failures: 1 occurrence(s) across issues []",
+      "occurrences": 1,
+      "affected_issues": [],
+      "affected_skills": [
+        "workflow-orchestrator"
+      ],
+      "reason": "CI gate was skipped after push. The orchestrator must enforce gh run watch before starting the next issue.",
+      "suggested_prompt_addition": "After every git push, run `gh run watch --exit-status <run-id>` and block on it before starting any next issue. If the run-id is unknown, use `gh run list --limit 1 --json databaseId -q '.[0].databaseId'` to retrieve it.",
+      "evidence_files": [
+        "/Users/ajhochhalter/Documents/odysseus-anthropic-oauth/.agent-stack/postmortems/2026-07-29-issue-0.json"
+      ]
+    }
+  ],
+  "workflow_patterns": [
+    {
+      "id": "w6-wrong-repo/branch-operation",
+      "category": "W6",
+      "description": "Wrong-repo/branch operation failures: 3 occurrence(s) across issues []",
+      "occurrences": 3,
+      "affected_issues": [],
+      "affected_skills": [
+        "workflow-orchestrator"
+      ],
+      "reason": "Skill targeted agent-stack but commits/PRs went to target project (or vice versa), or branch was not confirmed before a visible operation.",
+      "suggested_prompt_addition": "Add a Repo+Branch Confirmation gate: every skill that performs git push, gh pr create, browser smoke against a deployed URL, or any operation visible outside the local checkout must first emit `git -C <path> remote get-url origin` and `git -C <path> rev-parse --abbrev-ref HEAD`, compare against the skill's intended target, and halt on mismatch.",
+      "evidence_files": [
+        "/Users/ajhochhalter/Documents/odysseus-anthropic-oauth/.agent-stack/postmortems/2026-07-28-issue-0.json",
+        "/Users/ajhochhalter/Documents/odysseus-anthropic-oauth/.agent-stack/postmortems/2026-07-29-issue-0.json",
+        "/Users/ajhochhalter/Documents/odysseus-anthropic-oauth/.agent-stack/postmortems/2026-07-29-retro-anthropic-model-catalog.json"
+      ]
+    },
+    {
+      "id": "w1-required-skill-skipped",
+      "category": "W1",
+      "description": "Required skill skipped failures: 1 occurrence(s) across issues []",
+      "occurrences": 1,
+      "affected_issues": [],
+      "affected_skills": [
+        "workflow-orchestrator"
+      ],
+      "reason": "A required skill in the canonical chain was skipped. The orchestrator must enforce the chain \u2014 every required step is gated.",
+      "suggested_prompt_addition": "Before dispatching the next step, verify that the immediately-previous required step in the chain announced itself, expanded its TodoWrite checklist, and emitted its expected output artifact. If the previous step is missing, halt and surface the gap rather than continuing.",
+      "evidence_files": [
+        "/Users/ajhochhalter/Documents/odysseus-anthropic-oauth/.agent-stack/postmortems/2026-07-29-retro-anthropic-model-catalog.json"
+      ]
+    }
+  ],
+  "last_updated": "2026-07-29",
+  "total_runs_analyzed": 3,
+  "min_occurrences_threshold": 2,
+  "process_min_occurrences_threshold": 1,
+  "workflow_min_occurrences_threshold": 1
+}

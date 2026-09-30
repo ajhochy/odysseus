@@ -419,6 +419,42 @@ class TestProbeSingleModel:
         assert captured["headers"].get("x-api-key") == "sk-ant"
         assert captured["payload"]["model"] == "claude-sonnet-4-5"
 
+    def test_routes_anthropic_subscription_probe_with_oauth_headers(
+        self,
+        monkeypatch,
+    ):
+        _patch_resolve(monkeypatch)
+        from src.endpoint_resolver import RuntimeCredential
+
+        captured = {}
+
+        def fake_post(url, headers=None, json=None, timeout=None, verify=None):
+            captured.update(url=url, headers=headers, payload=json)
+            return _resp(
+                200,
+                json={"content": [{"type": "text", "text": "OK"}]},
+            )
+
+        monkeypatch.setattr(model_routes.httpx, "post", fake_post)
+        credential = RuntimeCredential(
+            "synthetic-oauth-access", "anthropic-subscription"
+        )
+
+        result = _probe_single_model(
+            "https://api.anthropic.com/v1",
+            credential,
+            "claude-sonnet-5",
+        )
+
+        assert result["status"] == "ok"
+        assert result.get("skipped") is None
+        assert captured["headers"]["Authorization"] == (
+            "Bearer synthetic-oauth-access"
+        )
+        assert "oauth-2025-04-20" in captured["headers"]["anthropic-beta"]
+        assert "x-api-key" not in captured["headers"]
+        assert captured["payload"]["model"] == "claude-sonnet-5"
+
     def test_with_tools_sends_anthropic_tool_schema(self, monkeypatch):
         _patch_resolve(monkeypatch)
         captured = {}
