@@ -1,0 +1,136 @@
+{
+  "run_id": "2026-07-29-issue-0",
+  "issue": 0,
+  "date": "2026-07-29",
+  "smoke_result": "fail",
+  "verification_claimed": "FAIL",
+  "divergence": false,
+  "criteria_results": [
+    {
+      "criterion_id": "issue-0-c1",
+      "text": "1. From Admin or `/setup anthropic-subscription`, an authenticated user starts a connection and sees an Anthropic authorization URL. Completing Claude login and pasting the returned code creates or reconnects exactly that owner's enabled endpoint and makes the curated Claude models selectable; cancel, expiry, malformed paste, state mismatch, and replay leave stored credentials unchanged and show a safe retryable error.",
+      "contract_status": "pass",
+      "smoke_status": "fail",
+      "category": "C2",
+      "notes": "OAuth completed successfully, but the selectable hard-coded catalog exposed old model IDs and included entries that returned HTTP 404. The contract only checked setup wiring and never proved that every advertised model ID was current and callable."
+    },
+    {
+      "criterion_id": "issue-0-c2",
+      "text": "2. Pending attempts and connected resources are distinct, owner-bound, single-use, and inaccessible to other owners.",
+      "contract_status": "pass",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "Not exercised by this single-owner manual smoke."
+    },
+    {
+      "criterion_id": "issue-0-c3",
+      "text": "3. Expiring linked access tokens refresh once per auth session, atomically persisting rotated credentials before callers proceed.",
+      "contract_status": "pass",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "The user confirmed OAuth connection, but did not report a forced refresh-path result."
+    },
+    {
+      "criterion_id": "issue-0-c4",
+      "text": "4. Subscription requests use OAuth bearer headers while API-key Anthropic requests retain the existing x-api-key behavior.",
+      "contract_status": "pass",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "The subscription path reached Anthropic; no live API-key control result was reported."
+    },
+    {
+      "criterion_id": "issue-0-c5",
+      "text": "5. OAuth message and tool transformations apply to sync and streaming paths without implicit 1M-context beta enrollment.",
+      "contract_status": "pass",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "No tool-transform-specific manual observation was reported."
+    },
+    {
+      "criterion_id": "issue-0-c6",
+      "text": "6. OAuth auth, quota, denial, upstream, and network failures remain distinct and do not expose credentials.",
+      "contract_status": "pass",
+      "smoke_status": "pass",
+      "category": "none",
+      "notes": "Invalid advertised models surfaced as safe HTTP 404 failures; no credential disclosure was reported."
+    },
+    {
+      "criterion_id": "issue-0-c7",
+      "text": "7. Disconnect and reconnect affect only the caller's endpoint and auth session.",
+      "contract_status": "pass",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "Not exercised in this smoke report."
+    },
+    {
+      "criterion_id": "issue-0-c8",
+      "text": "8. OAuth credentials and PKCE material never appear in logs, browser storage, committed fixtures, or API responses and remain encrypted at rest.",
+      "contract_status": "pass",
+      "smoke_status": "pass",
+      "category": "none",
+      "notes": "OAuth worked without the user reporting any credential exposure; the repair will continue to avoid reading or printing stored tokens."
+    },
+    {
+      "criterion_id": "issue-0-c9",
+      "text": "9. Live success requires app health, interactive OAuth, a normal streamed response, refresh-path smoke, and an Anthropic API-key control request.",
+      "contract_status": "untested",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "Interactive OAuth is now confirmed and some listed models produced responses, but the complete refresh and API-key control checklist has not yet been reported."
+    }
+  ],
+  "process_issues": [
+    {
+      "process_category": "P1",
+      "description": "The feature branch was pushed before the workflow recorded a blocking gh run watch result.",
+      "detected_by": "Conversation/tool history shows commit b2ade04 on the fork remote and no subsequent CI-watch evidence."
+    }
+  ],
+  "workflow_adherence": {
+    "overall_score": "partial",
+    "expected_chain": [
+      "workflow-orchestrator",
+      "planning-agent",
+      "acceptance-contract",
+      "coding-agent",
+      "verification-gate",
+      "failure-postmortem"
+    ],
+    "observed_chain": [
+      "workflow-orchestrator",
+      "planning-agent",
+      "acceptance-contract",
+      "coding-agent",
+      "verification-gate",
+      "failure-postmortem"
+    ],
+    "skipped_skills": [],
+    "issues": [
+      {
+        "workflow_category": "W6",
+        "affected_skill": "workflow-orchestrator",
+        "description": "The fresh localhost browser smoke was launched without re-emitting both the repository remote and active branch immediately beforehand.",
+        "detected_by": "Conversation/tool-call review."
+      }
+    ]
+  },
+  "implementation_files": [
+    "app.py",
+    "core/database.py",
+    "routes/anthropic_subscription_routes.py",
+    "routes/chat_helpers.py",
+    "routes/model_routes.py",
+    "src/anthropic_subscription.py",
+    "src/endpoint_resolver.py",
+    "src/llm_core.py",
+    "static/index.html",
+    "static/js/admin.js",
+    "static/js/anthropicSubscriptionFlow.js",
+    "static/js/slashCommands.js",
+    "tests/contract/test_issue_0.py",
+    "tests/live/test_anthropic_subscription_live.py"
+  ],
+  "failure_output": "User report: \"only problem i notice is that it is exposing old models, not the most recent models. and some of them return failed http 404, some work. OAuth worked though.\"",
+  "overall_category": "C2",
+  "suggested_follow_up": "Replace the static catalog with an authenticated, validated catalog path and add a live assertion that every advertised model completes a minimal request."
+}

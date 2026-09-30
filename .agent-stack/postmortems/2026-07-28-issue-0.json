@@ -1,0 +1,153 @@
+{
+  "run_id": "2026-07-28-issue-0",
+  "issue": 0,
+  "date": "2026-07-28",
+  "smoke_result": "fail",
+  "verification_claimed": "FAIL",
+  "divergence": false,
+  "criteria_results": [
+    {
+      "criterion_id": "issue-0-c1",
+      "text": "1. From Admin or `/setup anthropic-subscription`, an authenticated user starts\n   a connection and sees an Anthropic authorization URL. Completing Claude\n   login and pasting the returned code creates or reconnects exactly that\n   owner's enabled endpoint and makes the curated Claude models selectable;\n   cancel, expiry, malformed paste, state mismatch, and replay leave stored\n   credentials unchanged and show a safe retryable error.",
+      "contract_status": "pass",
+      "smoke_status": "fail",
+      "category": "C2",
+      "notes": "The first Admin smoke returned HTTP 200 from OAuth start but rendered a safe failure because the backend emitted authorize_url while the UI contract mock used authorization_url. The UI now accepts the canonical backend field and the legacy alias; the rerun reached Anthropic consent."
+    },
+    {
+      "criterion_id": "issue-0-c2",
+      "text": "2. Two simultaneous or sequential pending attempts have distinct state and\n   verifier values, are owner-bound and single-use, and cannot complete one\n   another's flow. A second user cannot view, resolve, reconnect, or disconnect\n   the first user's auth session or endpoint.",
+      "contract_status": "pass",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "Covered by focused integration tests; not repeated manually."
+    },
+    {
+      "criterion_id": "issue-0-c3",
+      "text": "3. When a linked access token expires within 60 seconds, concurrent requests\n   perform one refresh per auth session. A returned rotated refresh token and\n   access token are committed together before any caller proceeds; refresh\n   failure preserves a recoverable state and invalid/missing credentials\n   produce a reconnect-required response.",
+      "contract_status": "pass",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "Covered by focused integration tests; live refresh was not attempted without a completed OAuth connection."
+    },
+    {
+      "criterion_id": "issue-0-c4",
+      "text": "4. A request through an Anthropic subscription endpoint sends\n   `Authorization: Bearer`, `anthropic-version`, and only the OAuth beta headers\n   required by the validated prior-art contract; it never sends `x-api-key`.\n   The same request through an Anthropic API-key endpoint still sends\n   `x-api-key`, does not gain OAuth-only betas/transforms, and passes its\n   existing regression tests unchanged.",
+      "contract_status": "pass",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "Focused transport and API-key regression tests passed; no API key was available for a live control request."
+    },
+    {
+      "criterion_id": "issue-0-c5",
+      "text": "5. OAuth requests apply the validated Claude system-prompt and tool\n   transformations in sync and streaming paths, while preserving normal\n   assistant text/tool behavior. No code path adds a 1M-context beta unless a\n   future explicit setting and test opt into it.",
+      "contract_status": "pass",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "Covered at the real LLM request-shape boundary with focused tests."
+    },
+    {
+      "criterion_id": "issue-0-c6",
+      "text": "6. OAuth 401/403 or invalid-grant responses tell the user to reconnect; 429\n   responses identify quota/rate limiting without claiming credentials are\n   invalid; denial, upstream, and network failures remain distinct and do not\n   log response bodies or tokens.",
+      "contract_status": "pass",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "Focused safe-error tests passed."
+    },
+    {
+      "criterion_id": "issue-0-c7",
+      "text": "7. Disconnect removes only the caller's endpoint/auth reference, clears its\n   models from selection, and leaves other owners and API-key Anthropic\n   endpoints untouched. Reconnect replaces credentials for the same owner\n   without creating duplicate active endpoints.",
+      "contract_status": "pass",
+      "smoke_status": "not_checked",
+      "category": "none",
+      "notes": "Covered by owner-scoped route integration tests; no live endpoint was created because consent did not complete."
+    },
+    {
+      "criterion_id": "issue-0-c8",
+      "text": "8. Access tokens, refresh tokens, authorization codes, PKCE verifiers, and\n   state values never appear in application logs, plaintext session headers,\n   browser storage, committed fixtures, or API responses; persisted tokens use\n   `EncryptedText`.",
+      "contract_status": "pass",
+      "smoke_status": "pass",
+      "category": "none",
+      "notes": "The live UI retained attempts only in memory, did not render a callback into chat, and no tokens or callbacks were written to project artifacts."
+    },
+    {
+      "criterion_id": "issue-0-c9",
+      "text": "9. End-to-end success is claimed only after a local app health check, an\n   interactive OAuth completion (or an explicitly existing local Claude\n   login), a normal Odysseus chat producing a non-empty streamed Claude\n   response, a refresh-path smoke, and a control request proving an Anthropic\n   API key still works. If no eligible local login or interactive approval is\n   available, report the live smoke as blocked—not passed.",
+      "contract_status": "untested",
+      "smoke_status": "fail",
+      "category": "C5",
+      "notes": "The isolated app returned healthy and ready, both UI entry points reached a real authorization URL, and Claude displayed consent. Anthropic then required hCaptcha. Browser policy requires human confirmation and interaction for CAPTCHA, so callback exchange, inference, refresh, and API-key live control remain blocked and are not claimed."
+    }
+  ],
+  "process_issues": [
+    {
+      "process_category": "macos-path-alias-baseline",
+      "description": "The exact repository issue check has one deterministic clean-origin failure because /tmp canonicalizes to /private/tmp in an unchanged workspace-confinement assertion.",
+      "detected_by": "Full pytest output, isolated reproduction, os.path.realpath diagnostic, and comparison with origin/dev at 25a4d13."
+    },
+    {
+      "process_category": "external-captcha",
+      "description": "Anthropic's consent flow required hCaptcha before returning a pasted authorization code.",
+      "detected_by": "Live browser DOM and screenshot of the signed-in Anthropic consent flow."
+    }
+  ],
+  "workflow_adherence": {
+    "overall_score": "partial",
+    "expected_chain": [
+      "workflow-orchestrator",
+      "planning-agent",
+      "acceptance-contract",
+      "coding-agent",
+      "verification-gate",
+      "failure-triage",
+      "failure-postmortem"
+    ],
+    "observed_chain": [
+      "workflow-orchestrator",
+      "planning-agent",
+      "acceptance-contract",
+      "coding-agent",
+      "verification-gate",
+      "failure-triage",
+      "coding-agent",
+      "verification-gate",
+      "failure-triage",
+      "failure-postmortem"
+    ],
+    "skipped_skills": [],
+    "issues": [
+      {
+        "workflow_category": "W6",
+        "affected_skill": "verification-gate",
+        "description": "The feature branch was confirmed immediately before live smoke, but the remote URL was not re-emitted alongside it before browser interaction.",
+        "detected_by": "Transcript and tool-call review."
+      }
+    ]
+  },
+  "implementation_files": [
+    "AGENTS.md",
+    "app.py",
+    "core/database.py",
+    "docs/ai/",
+    "routes/anthropic_subscription_routes.py",
+    "routes/chat_helpers.py",
+    "routes/model_routes.py",
+    "scripts/run_ai_workflow.py",
+    "src/anthropic_subscription.py",
+    "src/endpoint_resolver.py",
+    "src/llm_core.py",
+    "static/index.html",
+    "static/js/admin.js",
+    "static/js/anthropicSubscriptionFlow.js",
+    "static/js/slashCommands.js",
+    "tests/contract/",
+    "tests/live/test_anthropic_subscription_live.py",
+    "tests/test_anthropic_subscription.py",
+    "tests/test_anthropic_subscription_routes.py",
+    "tests/test_llm_core_anthropic_subscription.py",
+    "tests/test_resolve_session_auth_anthropic.py"
+  ],
+  "failure_output": "Initial Admin smoke: POST /api/anthropic-subscription/oauth/start returned 200, but UI rendered 'Could not start Claude subscription sign-in.' Root cause: authorize_url vs authorization_url. After the fix, Anthropic consent reached hCaptcha, so live callback/inference remained blocked.",
+  "overall_category": "C2",
+  "suggested_follow_up": "Keep the canonical authorize_url fixture aligned across backend and UI contracts, and resume the account-gated live test after a human completes Anthropic's CAPTCHA."
+}

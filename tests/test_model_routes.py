@@ -1862,6 +1862,67 @@ def test_background_refresh_failure_keeps_existing_cached_models(monkeypatch):
     assert json.loads(ep.cached_models) == ["cached-model"]
 
 
+def test_background_refresh_resolves_provider_auth_runtime_credential(
+    monkeypatch,
+):
+    ep = _route_ep(
+        "subscription",
+        "https://api.anthropic.com",
+        cached_models=["claude-sonnet-4-6"],
+        endpoint_kind="api",
+        refresh_mode="manual",
+        owner="alice",
+    )
+    ep.provider_auth_id = "anthropic-auth"
+    ep.pinned_models = json.dumps(
+        ["claude-sonnet-5", "claude-haiku-3-5"]
+    )
+    ep.hidden_models = json.dumps(["claude-haiku-3-5"])
+    db = _RouteDb([ep])
+    router = model_routes.setup_model_routes(model_discovery=None)
+
+    monkeypatch.setattr(model_routes, "ModelEndpoint", _RouteModelEndpoint)
+    monkeypatch.setattr(model_routes, "SessionLocal", lambda: db)
+    monkeypatch.setattr(model_routes, "_auth_disabled", lambda: True)
+    monkeypatch.setattr(
+        model_routes,
+        "build_chat_url",
+        lambda base: f"{base}/v1/messages",
+    )
+
+    from src.endpoint_resolver import RuntimeCredential
+
+    credential = RuntimeCredential(
+        "synthetic-oauth-access", "anthropic-subscription"
+    )
+    resolved = []
+    probe_done = threading.Event()
+
+    def fake_resolve(endpoint):
+        resolved.append(endpoint.id)
+        return credential
+
+    def fake_probe(base_url, api_key=None, timeout=2):
+        assert base_url == "https://api.anthropic.com"
+        assert api_key is credential
+        probe_done.set()
+        return ["claude-opus-5", "claude-sonnet-5"]
+
+    monkeypatch.setattr(model_routes, "_resolve_probe_key", fake_resolve)
+    monkeypatch.setattr(model_routes, "_probe_endpoint", fake_probe)
+
+    _route_endpoint(router, "/api/models")(_route_request(), refresh=True)
+
+    assert probe_done.wait(2)
+    assert _wait_for(
+        lambda: json.loads(ep.cached_models)
+        == ["claude-opus-5", "claude-sonnet-5"]
+    )
+    assert resolved == ["subscription"]
+    assert json.loads(ep.pinned_models) == ["claude-sonnet-5"]
+    assert ep.hidden_models is None
+
+
 def test_api_models_auth_gate_fails_closed_on_unexpected_error(monkeypatch):
     """A non-HTTPException raised while checking auth must yield 500, not a
     silent pass-through that leaks the model list to an unauthenticated caller."""

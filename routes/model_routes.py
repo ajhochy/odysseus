@@ -695,6 +695,9 @@ def _resolve_probe_key(ep) -> Optional[str]:
 def _probe_single_model(base: str, api_key: str, model_id: str, timeout: int = 10, with_tools: bool = False) -> dict:
     """Send a realistic completion request to a single model. Returns {status, latency_ms, error?}."""
     provider = _safe_detect_provider(base)
+    is_anthropic_subscription = (
+        getattr(api_key, "auth_mode", None) == "anthropic-subscription"
+    )
     if _is_discovery_only_provider(provider):
         return {"status": "ok", "latency_ms": 0, "skipped": True}
     messages = [
@@ -707,11 +710,23 @@ def _probe_single_model(base: str, api_key: str, model_id: str, timeout: int = 1
     if provider == "anthropic":
         from src.llm_core import _normalize_anthropic_url, _build_anthropic_headers, _build_anthropic_payload
         target_url = _normalize_anthropic_url(base)
-        auth_headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        if is_anthropic_subscription:
+            from src.anthropic_subscription import (
+                anthropic_subscription_headers,
+                transform_oauth_messages,
+                transform_oauth_tools,
+            )
+
+            auth_headers = anthropic_subscription_headers(str(api_key))
+        else:
+            auth_headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         h = _build_anthropic_headers(auth_headers)
         payload = _build_anthropic_payload(model_id, messages, 0.0, 5)
         if _test_tools:
             payload["tools"] = [{"name": "test", "description": "Test tool", "input_schema": {"type": "object", "properties": {}}}]
+        if is_anthropic_subscription:
+            payload = transform_oauth_messages(payload)
+            payload = transform_oauth_tools(payload)
     elif provider == "ollama":
         from src.llm_core import _build_ollama_payload
         target_url = build_chat_url(base)
@@ -741,16 +756,21 @@ def _probe_single_model(base: str, api_key: str, model_id: str, timeout: int = 1
         else:
             # Extract error detail from response body
             error_msg = f"HTTP {r.status_code}"
-            try:
-                body = r.json()
-                if "error" in body:
-                    err = body["error"]
-                    if isinstance(err, dict):
-                        error_msg = err.get("message", error_msg)[:120]
-                    elif isinstance(err, str):
-                        error_msg = err[:120]
-            except Exception:
-                pass
+            if is_anthropic_subscription:
+                from src.anthropic_subscription import format_inference_error
+
+                error_msg = format_inference_error(r.status_code)
+            else:
+                try:
+                    body = r.json()
+                    if "error" in body:
+                        err = body["error"]
+                        if isinstance(err, dict):
+                            error_msg = err.get("message", error_msg)[:120]
+                        elif isinstance(err, str):
+                            error_msg = err[:120]
+                except Exception:
+                    pass
             return {"status": "fail", "latency_ms": latency, "error": error_msg}
     except httpx.TimeoutException:
         return {"status": "timeout", "latency_ms": timeout * 1000, "error": f"Timed out ({timeout}s)"}
@@ -955,6 +975,24 @@ def _probe_endpoint(base_url: str, api_key: str = None, timeout: int = 5) -> Lis
     from src.llm_core import httpx_get_kimi_aware
     base = resolve_url(_normalize_base(base_url))
     provider = _safe_detect_provider(base)
+    if getattr(api_key, "auth_mode", None) == "anthropic-subscription":
+        from src import anthropic_subscription
+
+        try:
+            return anthropic_subscription.fetch_available_models(
+                str(api_key), timeout=timeout
+            )
+        except anthropic_subscription.AnthropicSubscriptionError:
+            logger.warning(
+                "Anthropic subscription model discovery failed; "
+                "retaining the last known inventory."
+            )
+        except Exception:
+            logger.warning(
+                "Anthropic subscription model discovery could not reach "
+                "the provider; retaining the last known inventory."
+            )
+        return []
     if provider == "chatgpt-subscription":
         from src.chatgpt_subscription import fetch_available_models
         if api_key:
@@ -1260,6 +1298,33 @@ def _merge_model_ids(*lists):
     return out
 
 
+def _is_anthropic_subscription_credential(credential: Any) -> bool:
+    """Whether a resolved runtime credential belongs to subscription OAuth."""
+    return (
+        getattr(credential, "auth_mode", None)
+        == "anthropic-subscription"
+    )
+
+
+def _prune_subscription_model_preferences(ep: Any, model_ids) -> bool:
+    """Drop subscription preferences for models absent from live inventory.
+
+    Generic API endpoints may intentionally pin deployment IDs omitted by their
+    provider's model inventory, so this cleanup must only be called after a
+    successful Anthropic subscription discovery.
+    """
+    available = set(_normalize_model_ids(model_ids))
+    changed = False
+    for attr in ("pinned_models", "hidden_models"):
+        current = _normalize_model_ids(getattr(ep, attr, None))
+        retained = [model_id for model_id in current if model_id in available]
+        serialized = json.dumps(retained) if retained else None
+        if getattr(ep, attr, None) != serialized:
+            setattr(ep, attr, serialized)
+            changed = True
+    return changed
+
+
 def _is_mlx_deepseek_v4_repo_id(model_id: str) -> bool:
     m = str(model_id or "").lower()
     return "mlx-community/deepseek-v4" in m
@@ -1416,7 +1481,13 @@ def setup_model_routes(model_discovery):
         category = _classify_endpoint(base, kind)
         mode = _endpoint_refresh_mode(ep, kind)
         cached = _cached_model_ids(ep)
-        key = _refresh_key(base, getattr(ep, "api_key", None))
+        auth_id = getattr(ep, "provider_auth_id", None)
+        key_hint = (
+            f"provider-auth:{auth_id}"
+            if auth_id
+            else getattr(ep, "api_key", None)
+        )
+        key = _refresh_key(base, key_hint)
         state = _refresh_state.get(key, {})
 
         info = {
@@ -1478,9 +1549,20 @@ def setup_model_routes(model_discovery):
                         ok, info = _should_refresh_endpoint(ep, now, force=force)
                         if not ok:
                             continue
+                        probe_key = _resolve_probe_key(ep)
+                        if (
+                            getattr(ep, "provider_auth_id", None)
+                            and probe_key is None
+                        ):
+                            st = _refresh_state.setdefault(info["key"], {})
+                            st["last_failure"] = now
+                            st["fail_count"] = int(
+                                st.get("fail_count") or 0
+                            ) + 1
+                            continue
                         groups.setdefault(info["key"], {
                             "base": info["base"],
-                            "api_key": info["api_key"],
+                            "api_key": probe_key,
                             "timeout": info["timeout"],
                             "endpoint_ids": [],
                         })["endpoint_ids"].append(info["id"])
@@ -1504,10 +1586,20 @@ def setup_model_routes(model_discovery):
                                 key, endpoint_ids, ids, err = fut.result()
                                 st = _refresh_state.setdefault(key, {})
                                 if ids:
+                                    credential = groups[key].get("api_key")
+                                    is_subscription = (
+                                        _is_anthropic_subscription_credential(
+                                            credential
+                                        )
+                                    )
                                     for ep_id in endpoint_ids:
                                         ep_obj = db.query(ModelEndpoint).filter(ModelEndpoint.id == ep_id).first()
                                         if ep_obj:
                                             ep_obj.cached_models = json.dumps(ids)
+                                            if is_subscription:
+                                                _prune_subscription_model_preferences(
+                                                    ep_obj, ids
+                                                )
                                             changed = True
                                     st["last_success"] = _time.time()
                                     st["fail_count"] = 0
@@ -1809,7 +1901,10 @@ def setup_model_routes(model_discovery):
                 if ep_id and ep_id not in endpoints_cache:
                     ep = db.query(ModelEndpoint).filter(ModelEndpoint.id == ep_id).first()
                     if ep:
-                        endpoints_cache[ep_id] = {"base_url": ep.base_url, "api_key": ep.api_key}
+                        endpoints_cache[ep_id] = {
+                            "base_url": ep.base_url,
+                            "api_key": _resolve_probe_key(ep),
+                        }
                 ep_data = endpoints_cache.get(ep_id)
                 if not ep_data:
                     # Try to find by base_url from the model's endpoint field
@@ -1848,7 +1943,10 @@ def setup_model_routes(model_discovery):
                     "id": ep.id,
                     "name": ep.name,
                     "base_url": ep.base_url,
-                    "api_key": ep.api_key,
+                    "api_key": _resolve_probe_key(ep),
+                    "provider_auth_id": getattr(
+                        ep, "provider_auth_id", None
+                    ),
                 })
         finally:
             db.close()
@@ -1863,7 +1961,11 @@ def setup_model_routes(model_discovery):
             ok_count = 0
             for ep in ep_data:
                 base = _normalize_base(ep["base_url"])
-                all_models = _probe_endpoint(base, ep.get("api_key"))
+                all_models = (
+                    []
+                    if ep.get("provider_auth_id") and not ep.get("api_key")
+                    else _probe_endpoint(base, ep.get("api_key"))
+                )
                 # Update cached_models in DB
                 if all_models:
                     db2 = SessionLocal()
@@ -1871,6 +1973,12 @@ def setup_model_routes(model_discovery):
                         ep_obj = db2.query(ModelEndpoint).filter(ModelEndpoint.id == ep["id"]).first()
                         if ep_obj:
                             ep_obj.cached_models = json.dumps(all_models)
+                            if _is_anthropic_subscription_credential(
+                                ep.get("api_key")
+                            ):
+                                _prune_subscription_model_preferences(
+                                    ep_obj, all_models
+                                )
                             db2.commit()
                     finally:
                         db2.close()
@@ -2093,10 +2201,26 @@ def setup_model_routes(model_discovery):
                 # Explicit "require models" calls still probe; normal refresh
                 # belongs to /model-endpoints/{id}/models or /probe.
                 if require_model_list:
-                    probed_models = _probe_endpoint(
-                        base_url,
-                        (api_key.strip() or existing.api_key or None),
-                        timeout=_explicit_model_list_timeout(base_url, existing_kind_for_probe, refresh_timeout),
+                    probe_key = (
+                        _resolve_probe_key(existing)
+                        if getattr(existing, "provider_auth_id", None)
+                        else (api_key.strip() or existing.api_key or None)
+                    )
+                    probed_models = (
+                        []
+                        if (
+                            getattr(existing, "provider_auth_id", None)
+                            and probe_key is None
+                        )
+                        else _probe_endpoint(
+                            base_url,
+                            probe_key,
+                            timeout=_explicit_model_list_timeout(
+                                base_url,
+                                existing_kind_for_probe,
+                                refresh_timeout,
+                            ),
+                        )
                     )
                     if probed_models:
                         existing.cached_models = json.dumps(probed_models)
@@ -2256,12 +2380,22 @@ def setup_model_routes(model_discovery):
             ep = db.query(ModelEndpoint).filter(ModelEndpoint.id == ep_id).first()
             if not ep:
                 raise HTTPException(404, "Endpoint not found")
-            ep_data = {"id": ep.id, "name": ep.name, "base_url": ep.base_url, "api_key": ep.api_key}
+            ep_data = {
+                "id": ep.id,
+                "name": ep.name,
+                "base_url": ep.base_url,
+                "api_key": _resolve_probe_key(ep),
+                "provider_auth_id": getattr(ep, "provider_auth_id", None),
+            }
         finally:
             db.close()
 
         base = _normalize_base(ep_data["base_url"])
-        all_models = _probe_endpoint(base, ep_data["api_key"])
+        all_models = (
+            []
+            if ep_data["provider_auth_id"] and not ep_data["api_key"]
+            else _probe_endpoint(base, ep_data["api_key"])
+        )
         chat_models = [m for m in all_models if _is_chat_model(m)]
         skipped = len(all_models) - len(chat_models)
 
@@ -2285,9 +2419,15 @@ def setup_model_routes(model_discovery):
             try:
                 ep_obj = db2.query(ModelEndpoint).filter(ModelEndpoint.id == ep_id).first()
                 if ep_obj:
-                    ep_obj.hidden_models = json.dumps(failed) if failed else None
                     if all_models:
                         ep_obj.cached_models = json.dumps(all_models)
+                        if _is_anthropic_subscription_credential(
+                            ep_data["api_key"]
+                        ):
+                            _prune_subscription_model_preferences(
+                                ep_obj, all_models
+                            )
+                    ep_obj.hidden_models = json.dumps(failed) if failed else None
                     db2.commit()
             finally:
                 db2.close()
@@ -2321,13 +2461,24 @@ def setup_model_routes(model_discovery):
                 category = _classify_endpoint(base, kind)
                 timeout = _manual_refresh_timeout(ep, category, refresh_timeout)
                 try:
-                    probed = _probe_endpoint(base, ep.api_key, timeout=timeout)
+                    probe_key = _resolve_probe_key(ep)
+                    probed = (
+                        []
+                        if (
+                            getattr(ep, "provider_auth_id", None)
+                            and probe_key is None
+                        )
+                        else _probe_endpoint(base, probe_key, timeout=timeout)
+                    )
                 except Exception as exc:
                     logger.warning("Manual model refresh failed for endpoint %s at %s: %s", ep_id, base, exc)
                     probed = []
                 if probed:
                     all_models = probed
                     ep.cached_models = json.dumps(all_models)
+                    if _is_anthropic_subscription_credential(probe_key):
+                        _prune_subscription_model_preferences(ep, all_models)
+                        hidden = _hidden_model_ids(ep)
                     db.commit()
                     _invalidate_models_cache()
                     response.headers["X-Model-Refresh-Status"] = "refreshed"
